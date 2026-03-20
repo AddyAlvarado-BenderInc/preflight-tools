@@ -173,14 +173,23 @@ pub fn filter_operations(operations: &[Operation], trim: &Rect) -> Vec<Operation
     for operation in operations {
         if past_marked_content {
             match operation.operator.as_str() {
-                "q" => ctm_stack.push(*ctm_stack.last().unwrap()),
+                "q" => {
+                    let last = ctm_stack.last().cloned().unwrap_or(Matrix::identity());
+                    ctm_stack.push(last);
+                }
                 "Q" => {
-                    ctm_stack.pop();
+                    if !ctm_stack.is_empty() {
+                        ctm_stack.pop();
+                    }
                 }
                 "cm" => {
                     let m = operands_to_matrix(&operation.operands);
-                    let top = ctm_stack.last_mut().unwrap();
-                    *top = top.concat(&m);
+                    if let Some(top) = ctm_stack.last_mut() {
+                        *top = top.concat(&m);
+                    } else {
+                        // handling missing graphic state
+                        ctm_stack.push(m);
+                    }
                 }
                 _ => {}
             }
@@ -339,14 +348,22 @@ pub(crate) fn block_is_outside_image(block: &[Operation], base_ctm: &Matrix, tri
 
     for operation in block {
         match operation.operator.as_str() {
-            "q" => ctm_stack.push(*ctm_stack.last().unwrap()),
+            "q" => {
+                let last = ctm_stack.last().cloned().unwrap_or(Matrix::identity());
+                ctm_stack.push(last);
+            }
             "Q" => {
-                ctm_stack.pop();
+                if !ctm_stack.is_empty() {
+                    ctm_stack.pop();
+                }
             }
             "cm" => {
                 let m = operands_to_matrix(&operation.operands);
-                let top = ctm_stack.last_mut().unwrap();
-                *top = top.concat(&m)
+                if let Some(top) = ctm_stack.last_mut() {
+                    *top = top.concat(&m)
+                } else {
+                    ctm_stack.push(m)
+                }
             }
             "Do" => {
                 let ctm = ctm_stack.last().unwrap();
@@ -406,26 +423,32 @@ pub(crate) fn remove_outside_re_f_pairs(
 
         match operation.operator.as_str() {
             "q" => {
-                ctm_stack.push(*ctm_stack.last().unwrap());
+                let last = ctm_stack.last().copied().unwrap_or(Matrix::identity());
+                ctm_stack.push(last);
                 result.push(operation.clone());
                 i += 1;
             }
             "Q" => {
-                ctm_stack.pop();
+                if !ctm_stack.is_empty() {
+                    ctm_stack.pop();
+                }
                 result.push(operation.clone());
                 i += 1;
             }
             "cm" => {
                 let m = operands_to_matrix(&operation.operands);
-                let top = ctm_stack.last_mut().unwrap();
-                *top = top.concat(&m);
+                if let Some(top) = ctm_stack.last_mut() {
+                    *top = top.concat(&m);
+                } else {
+                    ctm_stack.push(m);
+                };
                 result.push(operation.clone());
                 i += 1;
             }
             "re" => {
                 let next_operation = block.get(i + 1).map(|o| o.operator.as_str());
                 if next_operation == Some("f") || next_operation == Some("f*") {
-                    let local_ctm = ctm_stack.last().unwrap();
+                    let local_ctm = ctm_stack.last().copied().unwrap_or(Matrix::identity());
                     if re_is_outside(&operation.operands, &local_ctm, trim) {
                         i += 2;
                         continue;

@@ -1,4 +1,4 @@
-use crate::Rect;
+use crate::rect::Rect;
 
 /// A 2D affine transformation matrix storing the 6 PDF values [a, b, c, d, e, f].
 ///
@@ -76,7 +76,7 @@ impl Matrix {
     /// Transform a rectangle into page space, returning an axis-aligned bounding box.
     /// We transform all four corners and take the min/max because rotation and negative scaling can reorder the corners.
     /// NOTE: we get an axis-aligned bounding box, because rotation/shear means the 4 corners don't stay axis-aligned
-    fn transform_rect(&self, rect: &Rect) -> Rect {
+    pub fn transform_rect(&self, rect: &Rect) -> Rect {
         // Transform all four corners of the rectangle and return the bounding box
         let corners = [
             self.transform_point(rect.x, rect.y),

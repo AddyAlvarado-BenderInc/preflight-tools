@@ -1,4 +1,4 @@
-use crate::filter_pdf::{Operation, filter_operations, object_to_f64};
+use crate::filter::{Operation, filter_operations, object_to_f64};
 use crate::rect::Rect;
 use lopdf::Object;
 use lopdf::content::Content;

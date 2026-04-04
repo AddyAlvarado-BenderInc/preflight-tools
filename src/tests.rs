@@ -15,8 +15,8 @@ use crate::filter::{
 
 // Shared helper -- loads the source PDF once and returns the document.
 // Paths are relative to the project root via CARGO_MANIFEST_DIR.
-const SOURCE_PDF_REL: &str = "test/test_assets/pdf test data print v2.pdf";
-const GOAL_PDF_REL: &str = "test/test_assets/pdf test data print v2 final goal.pdf";
+const SOURCE_PDF_REL: &str = "test/test_assets/pdf_test_data_print_v2.pdf";
+const GOAL_PDF_REL: &str = "test/test_assets/pdf_test_data_print_v2_final_goal.pdf";
 
 fn test_asset(rel: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)

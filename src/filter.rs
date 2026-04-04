@@ -357,17 +357,20 @@ pub(crate) fn block_is_outside_image(
     trim: Option<&Rect>,
 ) -> bool {
     let mut ctm_stack: Vec<Matrix> = vec![base_ctm.clone()];
+    let mut has_cm_stack: Vec<bool> = vec![false];
 
     for operation in block {
         match operation.operator.as_str() {
             "q" => {
                 let last = ctm_stack.last().cloned().unwrap_or(Matrix::identity());
                 ctm_stack.push(last);
+                has_cm_stack.push(false);
             }
             "Q" => {
                 if !ctm_stack.is_empty() {
                     ctm_stack.pop();
                 }
+                has_cm_stack.pop();
             }
             "cm" => {
                 let m = operands_to_matrix(&operation.operands);
@@ -376,18 +379,48 @@ pub(crate) fn block_is_outside_image(
                 } else {
                     ctm_stack.push(m)
                 }
+                if let Some(flag) = has_cm_stack.last_mut() {
+                    *flag = true;
+                }
             }
             "Do" => {
-                let ctm = ctm_stack.last().unwrap();
-                let (px, _py) = ctm.transform_point(0.0, 0.0);
-                if px >= trim.expect("trim box should be set before processing Do operators").right() {
-                    return true;
+                let has_ctm = has_cm_stack.last().copied().unwrap_or(false);
+                if has_ctm {
+                    if let Some(trim) = trim {
+                        let ctm = ctm_stack.last().copied().unwrap_or(Matrix::identity());
+                        let unit_rect = Rect::new(0.0, 0.0, 1.0, 1.0);
+                        let page_rect = ctm.transform_rect(&unit_rect);
+                        if page_rect.is_outside(trim) {
+                            return true;
+                        }
+                    }
                 }
             }
             _ => {}
         }
     }
     false // has_do found but wasn't outside - don't drop
+}
+
+/// Compute the axis-aligned bounding box of a set of points (already in local space),
+/// transform to page space via ctm, and check if it is entirely outside the trim box.
+/// Returns false (keep it) if points is empty — can't determine without data.
+fn subpath_bbox_is_outside(points: &[(f64, f64)], ctm: &Matrix, trim: &Rect) -> bool {
+    if points.is_empty() {
+        return false;
+    }
+    let mut xmin = f64::INFINITY;
+    let mut xmax = f64::NEG_INFINITY;
+    let mut ymin = f64::INFINITY;
+    let mut ymax = f64::NEG_INFINITY;
+    for &(x, y) in points {
+        let (px, py) = ctm.transform_point(x, y);
+        xmin = xmin.min(px);
+        xmax = xmax.max(px);
+        ymin = ymin.min(py);
+        ymax = ymax.max(py);
+    }
+    Rect::from_corners(xmin, ymin, xmax, ymax).is_outside(trim)
 }
 
 /// Removes rectangle fill pairs (`re` followed by `f` or `f*`) that are completely outside the specified trim area.
@@ -430,8 +463,138 @@ pub(crate) fn remove_outside_re_f_pairs(
     let mut ctm_stack: Vec<Matrix> = vec![*base_ctm];
     let mut i = 0;
 
+    let mut in_path = false;
+    let mut subpaths: Vec<(Vec<Operation>, Vec<(f64, f64)>)> = Vec::new();
+    let mut current_operation: Vec<Operation> = Vec::new();
+    let mut current_points: Vec<(f64, f64)> = Vec::new();
+    let mut has_clip = false; // set if a W/W* clipping operator appears in the path, these paths must never be dropped.
+
     while i < block.len() {
         let operation = &block[i];
+
+        if in_path {
+            match operation.operator.as_str() {
+                "m" => {
+                    subpaths.push((
+                        std::mem::take(&mut current_operation),
+                        std::mem::take(&mut current_points),
+                    ));
+                    let x = object_to_f64(&operation.operands[0]);
+                    let y = object_to_f64(&operation.operands[1]);
+                    current_operation = vec![operation.clone()];
+                    current_points = vec![(x, y)];
+                    i += 1;
+                }
+                "l" => {
+                    current_points.push((
+                        object_to_f64(&operation.operands[0]),
+                        object_to_f64(&operation.operands[1]),
+                    ));
+                    current_operation.push(operation.clone());
+                    i += 1;
+                }
+                "c" => {
+                    // 6 operands: x1 y1 x2 y2 x3 y3
+                    for chunk in operation.operands.chunks(2) {
+                        current_points.push((object_to_f64(&chunk[0]), object_to_f64(&chunk[1])));
+                    }
+                    current_operation.push(operation.clone());
+                    i += 1;
+                }
+                "v" | "y" => {
+                    // 4 operands: two xy pairs
+                    for chunk in operation.operands.chunks(2) {
+                        current_points.push((object_to_f64(&chunk[0]), object_to_f64(&chunk[1])));
+                    }
+                    current_operation.push(operation.clone());
+                    i += 1;
+                }
+                "h" => {
+                    current_operation.push(operation.clone());
+                    i += 1;
+                }
+                "re" => {
+                    subpaths.push((
+                        std::mem::take(&mut current_operation),
+                        std::mem::take(&mut current_points),
+                    ));
+                    let x = object_to_f64(&operation.operands[0]);
+                    let y = object_to_f64(&operation.operands[1]);
+                    let w = object_to_f64(&operation.operands[2]);
+                    let h_val = object_to_f64(&operation.operands[3]);
+                    current_operation = vec![operation.clone()];
+                    current_points = vec![(x, y), (x + w, y), (x + w, y + h_val), (x, y + h_val)];
+                    i += 1;
+                }
+                "W" | "W*" => {
+                    has_clip = true;
+                    current_operation.push(operation.clone());
+                    i += 1;
+                }
+                "S" | "s" | "f" | "f*" | "F" | "B" | "B*" | "b" | "b*" | "n" => {
+                    subpaths.push((
+                        std::mem::take(&mut current_operation),
+                        std::mem::take(&mut current_points),
+                    ));
+                    in_path = false;
+                    let paint = operation.operator.as_str();
+                    let ctm = ctm_stack.last().copied().unwrap_or(Matrix::identity());
+
+                    if has_clip || paint == "n" {
+                        for (ops, _) in subpaths.drain(..) {
+                            result.extend(ops);
+                        }
+                        result.push(operation.clone());
+                    } else if paint == "S" || paint == "s" {
+                        let mut kept: Vec<Operation> = Vec::new();
+                        for (sub_ops, sub_pts) in subpaths.drain(..) {
+                            let outside =
+                                trim.map_or(false, |t| subpath_bbox_is_outside(&sub_pts, &ctm, t));
+                            if !outside {
+                                kept.extend(sub_ops);
+                            }
+                        }
+                        if !kept.is_empty() {
+                            result.extend(kept);
+                            result.push(Operation {
+                                operator: paint.to_string(),
+                                operands: vec![],
+                            });
+                        }
+                    } else {
+                        let all_outside = trim.map_or(false, |t| {
+                            !subpaths.is_empty()
+                                && subpaths
+                                    .iter()
+                                    .all(|(_, pts)| subpath_bbox_is_outside(&pts, &ctm, t))
+                        });
+                        if !all_outside {
+                            for (ops, _) in subpaths.drain(..) {
+                                result.extend(ops);
+                            }
+                            result.push(operation.clone());
+                        }
+                        subpaths.clear();
+                    }
+                    has_clip = false;
+                    i += 1;
+                }
+                _ => {
+                    subpaths.push((
+                        std::mem::take(&mut current_operation),
+                        std::mem::take(&mut current_points),
+                    ));
+                    for (ops, _) in subpaths.drain(..) {
+                        result.extend(ops);
+                    }
+                    in_path = false;
+                    has_clip = false;
+                    result.push(operation.clone());
+                    i += 1;
+                }
+            }
+            continue;
+        }
 
         match operation.operator.as_str() {
             "q" => {
@@ -467,17 +630,36 @@ pub(crate) fn remove_outside_re_f_pairs(
                             continue;
                         }
                     }
+                    result.push(operation.clone());
+                    i += 1;
+                } else {
+                    in_path = true;
+                    subpaths.clear();
+                    has_clip = false;
+                    let x = object_to_f64(&operation.operands[0]);
+                    let y = object_to_f64(&operation.operands[1]);
+                    let w = object_to_f64(&operation.operands[2]);
+                    let h_val = object_to_f64(&operation.operands[3]);
+                    current_operation = vec![operation.clone()];
+                    current_points = vec![(x, y), (x + w, y), (x + w, y + h_val), (x, y + h_val)];
+                    i += 1;
                 }
-                result.push(operation.clone());
+            }
+            "m" => {
+                in_path = true;
+                subpaths.clear();
+                has_clip = false;
+                let x = object_to_f64(&operation.operands[0]);
+                let y = object_to_f64(&operation.operands[1]);
+                current_operation = vec![operation.clone()];
+                current_points = vec![(x, y)];
                 i += 1;
             }
-
             _ => {
                 result.push(operation.clone());
                 i += 1;
             }
         }
     }
-
     result
 }

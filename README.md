@@ -1,4 +1,4 @@
-# PDF Print Mark Removal
+# PDF Print Mark Removal - WIP
 
 Remove print marks from PDF files by genuinely deleting all content that falls
 outside the page's **TrimBox** -- while preserving everything inside it.

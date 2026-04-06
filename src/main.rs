@@ -9,7 +9,9 @@ fn main() {
         eprintln!("Usage: {} <input.pdf> [output.pdf]", args[0]);
         eprintln!();
         eprintln!("  <input.pdf>   Path to the PDF file to process");
-        eprintln!("  [output.pdf]  Path for the output file (default: test/test_result/<input>_trimmed.pdf)");
+        eprintln!(
+            "  [output.pdf]  Path for the output file (default: <input>-trimmed.pdf beside input)"
+        );
         process::exit(1);
     }
 
@@ -21,16 +23,17 @@ fn main() {
     }
 
     let output_path: PathBuf = if args.len() == 3 {
-        PathBuf::from(&args[2])
+        let given = PathBuf::from(&args[2]);
+        if given.is_dir() {
+            let stem = input_path.file_stem().unwrap_or_default().to_string_lossy();
+            given.join(format!("{}-trimmed.pdf", stem))
+        } else {
+            given
+        }
     } else {
-        let stem = input_path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy();
-        let output_name = format!("{}_trimmed.pdf", stem);
-
-        let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        project_root.join("test").join("test_result").join(output_name)
+        let stem = input_path.file_stem().unwrap_or_default().to_string_lossy();
+        let input_dir = input_path.parent().unwrap_or(Path::new("."));
+        input_dir.join(format!("{}-trimmed.pdf", stem))
     };
 
     if let Some(parent) = output_path.parent() {

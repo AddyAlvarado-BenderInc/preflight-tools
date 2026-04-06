@@ -5,3 +5,7 @@ edition = "2024"
 
 [dependencies]
 lopdf = "0.40.0"
+
+[[bin]]
+name = "ptrim"
+path = "src/main.rs"

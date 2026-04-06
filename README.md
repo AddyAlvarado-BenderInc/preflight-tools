@@ -1,4 +1,4 @@
-# PDF Print Mark Removal - WIP
+# PDF Print Mark Removal
 
 Remove print marks from PDF files by genuinely deleting all content that falls
 outside the page's **TrimBox** -- while preserving everything inside it.
@@ -10,6 +10,13 @@ outside the page's **TrimBox** -- while preserving everything inside it.
 | **No cropping**   | MediaBox and CropBox dimensions stay unchanged.                                                     |
 | **No covering**   | No white rectangles or overlay objects to simulate erasure.                                         |
 | **True deletion** | Content is removed from the content stream and unused objects are pruned from the PDF object table. |
+
+## Status
+
+**Alpha.** Tested against 4 production pre-press PDFs; 2 pass correctly end-to-end.
+See [Known Limitations](#known-limitations) for currently identified failure modes.
+
+---
 
 ## Dependencies
 
@@ -56,6 +63,9 @@ outside the page's **TrimBox** -- while preserving everything inside it.
    the surviving operations, then remove unreferenced entries from the page's
    `/Resources` sub-dictionaries (`/ExtGState`, `/Font`, `/XObject`,
    `/ColorSpace`) using
+   > **Note:** Resource collection only scans the page-level content stream.
+   > Names referenced exclusively inside Form XObjects are not seen and may be
+   > incorrectly pruned. See [Known Limitations](#known-limitations).
    [`Dictionary::remove`](https://docs.rs/lopdf/0.40.0/lopdf/struct.Dictionary.html#method.remove).
 8. **Prune orphaned objects** via
    [`Document::prune_objects`](https://docs.rs/lopdf/0.40.0/lopdf/struct.Document.html#method.prune_objects).
@@ -75,6 +85,10 @@ The filter processes operations inside buffered `q`/`Q` blocks:
   the trim boundary, the entire block is dropped.
 - **Rectangle fills** (`re` + `f`/`f*`): each pair is individually tested
   against the TrimBox. Outside pairs are removed; inside pairs are kept.
+- **Rectangle strokes** (`re` + `S`/`s`): each rectangle is tested
+  individually. When a multi-subpath sequence (multiple `re` calls before a
+  single `S`) spans both inside and outside the TrimBox, the group is split so
+  that only the surviving subpaths share the final `S` operator.
 - **Marked content** (`BDC`/`BMC` ... `EMC`): the artwork lives inside nested
   marked content sections. Once all marked content closes (depth returns to 0),
   everything remaining in the stream is unconditionally a print mark and is
@@ -251,13 +265,29 @@ understand the library integration.
 
 ## Usage
 
+### Install (global binary)
+
+The crate is configured with `[[bin]] name = "ptrim"`. Install once from the
+project root and then call `ptrim` from any directory:
+
+```bash
+cargo install --path .
+```
+
+This places the binary at `~/.cargo/bin/ptrim`, which is on `PATH` after a
+standard Rust installation.
+
+```bash
+ptrim <input.pdf> [output.pdf]
+```
+
 ### Build
 
 ```bash
 cargo build --release
 ```
 
-### Run
+### Run (without installing)
 
 ```bash
 cargo run --release -- <input.pdf> [output.pdf]
@@ -320,6 +350,32 @@ qpdf --check input.pdf
 ```
 
 Install: `brew install qpdf poppler` (macOS) or `apt install qpdf poppler-utils` (Debian/Ubuntu).
+
+---
+
+## Known Limitations
+
+### ColorSpace resources pruned based on page stream only
+
+`collect_referenced_resources` scans only the page-level content stream for
+`cs`/`CS` operator references. Colorspace names used exclusively inside
+**Form XObjects** (placed via `Do`) are not seen by the scan, so they are
+incorrectly removed from the page's `/Resources /ColorSpace` dictionary.
+
+This can cause rendering failures for pages that use named colorspaces (e.g.
+DeviceN `[/Cyan /Magenta /Yellow]`) only within placed Form XObjects. Such
+colorspaces are typically set up once on the page and inherited by all Form
+XObjects; removing them breaks those XObjects.
+
+**Fix:** remove `b"ColorSpace"` from the pruning loop in
+`prune_page_resources` (`src/process.rs`), or extend `collect_referenced_resources`
+to traverse Form XObject streams recursively.
+
+### Straddling objects are kept whole
+
+Objects that cross the TrimBox boundary are preserved in their entirety; they
+are not clipped to the boundary. Bleed-zone content that straddles the trim
+edge will remain in the output.
 
 ---
 

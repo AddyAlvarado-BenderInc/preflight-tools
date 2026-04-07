@@ -43,7 +43,7 @@ fn main() {
     if args.contains(&String::from("--version")) {
         let version = env!("CARGO_PKG_VERSION");
         println!("{}", version);
-        process::exit(1);
+        process::exit(0);
     }
 
     if let Some((inputs, output_dir)) = parse_batch_args(&args) {

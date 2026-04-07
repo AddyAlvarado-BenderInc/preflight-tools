@@ -196,7 +196,7 @@ pub fn filter_operations(operations: &[Operation], trim: Option<Rect>) -> Vec<Op
             "cm" => {
                 let m = operands_to_matrix(&operation.operands);
                 if let Some(top) = ctm_stack.last_mut() {
-                    *top = top.concat(&m);
+                    *top = m.concat(top);
                 } else {
                     ctm_stack.push(m);
                 }
@@ -310,7 +310,7 @@ pub(crate) fn block_is_outside_image(
             "cm" => {
                 let m = operands_to_matrix(&operation.operands);
                 if let Some(top) = ctm_stack.last_mut() {
-                    *top = top.concat(&m)
+                    *top = m.concat(top)
                 } else {
                     ctm_stack.push(m)
                 }
@@ -548,7 +548,7 @@ pub(crate) fn remove_outside_re_f_pairs(
             "cm" => {
                 let m = operands_to_matrix(&operation.operands);
                 if let Some(top) = ctm_stack.last_mut() {
-                    *top = top.concat(&m);
+                    *top = m.concat(top);
                 } else {
                     ctm_stack.push(m);
                 };

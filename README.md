@@ -14,10 +14,11 @@ outside the page's **TrimBox** -- while preserving everything inside it.
 ## Status
 
 **Beta.** Core algorithm validated against production-level pre-press PDFs, including
-previously troublesome InDesign-exported files with heavy tagged-content use. Output
-geometry matches goal files. Remaining work before full release: continued
-battle-testing on diverse production files and completion of the full `test/` fixture
-suite. See [Known Limitations](#known-limitations) for the current known tradeoffs.
+previously troublesome InDesign-exported files with heavy tagged-content use and PDFs
+with nested coordinate transforms. Output geometry matches goal files. Remaining work
+before full release: continued battle-testing on diverse production files and completion
+of the full `test/` fixture suite. See [Known Limitations](#known-limitations) for the
+current known tradeoffs.
 
 ---
 
@@ -185,6 +186,28 @@ y' = b*x + d*y + f
 The CTM is managed as a stack: `q` saves the current matrix, `Q` restores
 it, and `cm` concatenates (multiplies) a new transformation onto the top.
 
+The concatenation order is significant. A `cm` operator specifies a new matrix $M$
+that maps from the **new inner coordinate space** to the **current coordinate space**.
+The accumulated CTM (`top`) maps from the current space to page space. The resulting
+CTM must therefore map inner space all the way to page space: $top \circ M$ (apply
+$M$ first, then `top`). In the code, `Matrix::concat(self, other)` computes
+`other ∘ self`, so the CTM update on a `cm` operator must be:
+
+```rust
+*top = m.concat(top)   // top ∘ m -- correct: inner-to-current, then current-to-page
+```
+
+Not:
+
+```rust
+*top = top.concat(&m)  // m ∘ top -- wrong: reverses the transform order
+```
+
+With the wrong order, an outer translate `1 0 0 1 -30 -30 cm` combined with an inner
+image transform `60.52 0 0 57.91 70.19 494.67 cm` produces a computed image origin of
+`(-1745, -1243)` instead of the correct `(40, 465)`, causing the image to be
+incorrectly classified as outside the TrimBox and dropped. See the history note below.
+
 ### Marked content and InDesign tagged content
 
 Modern InDesign exports wrap virtually all content -- including artwork, images,
@@ -222,6 +245,25 @@ Q
 Under the old heuristic the second `EMC` would trigger unconditional dropping.
 Under the current approach the print marks are dropped only because their
 coordinates fall outside the TrimBox -- which is the correct, robust criterion.
+
+### CTM concatenation order
+
+An earlier iteration of this filter updated the CTM stack as `top.concat(&m)` instead
+of `m.concat(top)`. With `Matrix::concat(self, other)` defined as `other ∘ self`,
+the wrong call computed `m ∘ top` (outer transform applied last) instead of the
+correct `top ∘ m` (inner-to-current transform applied first).
+
+The error was invisible for simple single-`cm` cases but produced wrong page-space
+coordinates for any content nested inside multiple `cm` operators. On a two-page
+pre-press PDF, an outer `1 0 0 1 -30 -30 cm` block containing nine image subblocks
+(each with its own inner `cm`) caused all nine images to be computed at page
+coordinates around `(-1745, -1243)` instead of their actual positions inside the
+TrimBox `[9, 9, 546, 621]` on page 2. Every image was therefore classified as
+out-of-bounds and dropped, along with their linked softmask groups and transparency
+objects -- 17 objects in total -- producing a blank second page.
+
+The fix was applied to all three `cm`-handling sites in `filter.rs`:
+`filter_operations`, `block_is_outside_image`, and `remove_outside_re_f_pairs`.
 
 ---
 
@@ -302,7 +344,11 @@ This places the binary at `~/.cargo/bin/ptrim`, which is on `PATH` after a
 standard Rust installation.
 
 ```bash
+# Single file
 ptrim <input.pdf> [output.pdf]
+
+# Batch
+ptrim [input-1.pdf, input-2.pdf, ...] [output/dir]
 ```
 
 ### Build
@@ -317,9 +363,45 @@ cargo build --release
 cargo run --release -- <input.pdf> [output.pdf]
 ```
 
+### Arguments
+
+#### Single-file mode
+
+```bash
+ptrim <input.pdf> [output.pdf]
+```
+
 - `<input.pdf>` -- path to the PDF file to process (required).
-- `[output.pdf]` -- path for the output file (optional). Defaults to
-  `test/test_result/<input>_trimmed.pdf` relative to the project root.
+- `[output.pdf]` -- path for the output file (optional). If a directory is
+  given, the trimmed file is written into it as `<stem>-trimmed.pdf`. If
+  omitted, the file is written beside the input as `<stem>-trimmed.pdf`.
+
+#### Batch mode
+
+```bash
+ptrim [input-1.pdf, input-2.pdf, input-3.pdf] [output/dir]
+```
+
+Pass a comma-separated list of input paths enclosed in square brackets, with
+an optional output directory as the final argument.
+
+- `[input-1.pdf, ...]` -- one or more PDF paths separated by commas, wrapped
+  in `[` and `]`. Spaces around commas are ignored.
+- `[output/dir]` -- directory where every trimmed file is written (optional).
+  Defaults to the same directory as each input file.
+
+Each file is written as `<stem>-trimmed.pdf` inside the output directory. If
+any input file fails, processing continues and the exit code is 1 at the end.
+
+Examples:
+
+```bash
+# Batch — all output to a specific directory
+ptrim [art-1.pdf, art-2.pdf, art-3.pdf] output/trimmed/
+
+# Batch — each trimmed file beside its input
+ptrim [art-1.pdf, art-2.pdf, art-3.pdf]
+```
 
 ### Test
 

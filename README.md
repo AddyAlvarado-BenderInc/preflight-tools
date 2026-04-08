@@ -265,6 +265,47 @@ objects -- 17 objects in total -- producing a blank second page.
 The fix was applied to all three `cm`-handling sites in `filter.rs`:
 `filter_operations`, `block_is_outside_image`, and `remove_outside_re_f_pairs`.
 
+### Form XObject unit-square assumption
+
+When the filter walks a `q/Q` block looking for image operations, it checks for the
+`Do` operator (which paints an XObject). The original test approximated the painted
+region by mapping a 1×1 unit square through the accumulated CTM:
+
+```rust
+let unit_rect = Rect::new(0.0, 0.0, 1.0, 1.0);
+let page_rect  = ctm.transform_rect(&unit_rect);
+if page_rect.is_outside(trim) { return true; }
+```
+
+This is geometrically correct for **Image XObjects**, where the preceding `cm`
+operator encodes the full rendered width and height of the raster in points (so the
+determinant `|ad − bc|` is on the order of the image area in pt²). The unit square
+maps to a bounding box that faithfully represents the image's footprint on the page.
+
+It is **wrong for Form XObjects**, where the geometry lives in the XObject's `/BBox`
+dictionary entry rather than in the `cm` that places it. A typical placement `cm`
+for a Form XObject carries only a translation (or a near-identity transform), giving
+`|ad − bc| ≈ 1`. Mapping the unit square through such a CTM produces a 1×1 pt box
+at the translate offset — a position that can easily fall outside the TrimBox even
+though the Form itself occupies most of the page.
+
+The fix guards the unit-square test with a determinant threshold:
+
+```rust
+let det = (ctm.a * ctm.d - ctm.b * ctm.c).abs();
+if det > 2.0 {
+    let unit_rect = Rect::new(0.0, 0.0, 1.0, 1.0);
+    let page_rect  = ctm.transform_rect(&unit_rect);
+    if page_rect.is_outside(trim) { return true; }
+}
+```
+
+A threshold of `2.0` is conservative: pure translations, rotations, and reflections
+all have `|det| = 1.0` exactly, so they are correctly skipped. Any raster image
+large enough to be meaningful in a print workflow has `|det|` well into the hundreds
+or thousands. Form XObjects placed with near-identity `cm` are therefore kept, while
+out-of-bounds raster images are still detected and dropped.
+
 ---
 
 ## Project Structure
@@ -402,6 +443,19 @@ ptrim [art-1.pdf, art-2.pdf, art-3.pdf] output/trimmed/
 # Batch — each trimmed file beside its input
 ptrim [art-1.pdf, art-2.pdf, art-3.pdf]
 ```
+
+> **zsh / bash note:** Square brackets are reserved glob syntax in most shells.
+> Escape them with backslashes on the command line:
+>
+> ```bash
+> ptrim \[art-1.pdf, art-2.pdf, art-3.pdf\] output/trimmed/
+> ```
+>
+> Alternatively, single-quote the entire bracket block:
+>
+> ```bash
+> ptrim '[art-1.pdf, art-2.pdf, art-3.pdf]' output/trimmed/
+> ```
 
 ### Test
 

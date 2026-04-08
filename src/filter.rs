@@ -323,10 +323,13 @@ pub(crate) fn block_is_outside_image(
                 if has_ctm {
                     if let Some(trim) = trim {
                         let ctm = ctm_stack.last().copied().unwrap_or(Matrix::identity());
-                        let unit_rect = Rect::new(0.0, 0.0, 1.0, 1.0);
-                        let page_rect = ctm.transform_rect(&unit_rect);
-                        if page_rect.is_outside(trim) {
-                            return true;
+                        let det = (ctm.a * ctm.d - ctm.b * ctm.c).abs();
+                        if det > 2.0 {
+                            let unit_rect = Rect::new(0.0, 0.0, 1.0, 1.0);
+                            let page_rect = ctm.transform_rect(&unit_rect);
+                            if page_rect.is_outside(trim) {
+                                return true;
+                            }
                         }
                     }
                 }
